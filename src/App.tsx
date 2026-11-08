@@ -5,6 +5,7 @@ import { HandoffView } from "./components/HandoffView";
 import { Icon } from "./components/Icon";
 import { PreviewDock } from "./components/PreviewDock";
 import { SheetView } from "./components/SheetView";
+import { SliceView } from "./components/SliceView";
 import { ThemeMenu } from "./components/ThemeMenu";
 import { Btn, IconBtn } from "./components/ui";
 import {
@@ -39,7 +40,7 @@ import {
 } from "./lib/theme";
 import { cn } from "./utils/cn";
 
-type Tab = "board" | "sheet" | "handoff";
+type Tab = "board" | "sheet" | "handoff" | "slice";
 type Tone = "info" | "success" | "warn" | "danger";
 interface Toast {
   id: string;
@@ -82,6 +83,7 @@ export default function App() {
   const doc = hist.present;
 
   const [tab, setTab] = useState<Tab>("board");
+  const [sliceFrame, setSliceFrame] = useState<Frame | null>(null);
   const [filters, setFilters] = useState<Filters>({
     query: "",
     shot: "ALL",
@@ -505,7 +507,7 @@ h2{font:400 24px/1 "Bebas Neue",Impact,sans-serif;letter-spacing:.04em;color:#ff
   /* ------------------------------ shortcuts ------------------------------ */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (editorId) return;
+      if (editorId || tab === "slice") return;
       const el = e.target as HTMLElement;
       const typing = /INPUT|TEXTAREA|SELECT/.test(el.tagName) || el.isContentEditable;
       const meta = e.metaKey || e.ctrlKey;
@@ -541,11 +543,11 @@ h2{font:400 24px/1 "Bebas Neue",Impact,sans-serif;letter-spacing:.04em;color:#ff
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [editorId, focusId, selected, visible, api]);
+  }, [editorId, focusId, selected, visible, api, tab]);
 
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
-      if (editorId) return;
+      if (editorId || tab === "slice") return;
       const files = Array.from(e.clipboardData?.items ?? [])
         .filter((i) => i.type.startsWith("image/"))
         .map((i) => i.getAsFile())
@@ -557,7 +559,7 @@ h2{font:400 24px/1 "Bebas Neue",Impact,sans-serif;letter-spacing:.04em;color:#ff
     };
     window.addEventListener("paste", onPaste);
     return () => window.removeEventListener("paste", onPaste);
-  }, [editorId, importFiles]);
+  }, [editorId, importFiles, tab]);
 
   /* ------------------------------ views ------------------------------ */
   const applyView = (v: SavedView) => {
@@ -568,6 +570,7 @@ h2{font:400 24px/1 "Bebas Neue",Impact,sans-serif;letter-spacing:.04em;color:#ff
   const tabs: { key: Tab; label: string; icon: string; badge?: string }[] = [
     { key: "board", label: "Board", icon: "grid", badge: String(doc.frames.length) },
     { key: "sheet", label: "Contact sheet", icon: "sheet" },
+    { key: "slice", label: "Slice studio", icon: "scissors" },
     { key: "handoff", label: "LLM handoff", icon: "spark", badge: String(handoff.selected.length) },
   ];
 
@@ -749,6 +752,7 @@ h2{font:400 24px/1 "Bebas Neue",Impact,sans-serif;letter-spacing:.04em;color:#ff
               setEditorId(id);
             }}
             onGoSheet={() => setTab("sheet")}
+            onSlice={(id) => { const frame = doc.frames.find((f) => f.id === id); if (frame) { setSliceFrame({ ...frame }); setTab("slice"); } }}
             starts={starts}
             searchRef={searchRef}
           />
@@ -814,6 +818,15 @@ h2{font:400 24px/1 "Bebas Neue",Impact,sans-serif;letter-spacing:.04em;color:#ff
             busy={busy}
           />
         )}
+        <div className={cn("min-h-0 min-w-0 flex-1", tab === "slice" ? "flex" : "hidden")}>
+          <SliceView frames={doc.frames} requestedFrame={sliceFrame} onAdd={(frames) => {
+            dispatch({ type: "ADD_FRAMES", frames });
+            setFocusId(frames[0].id);
+            setSelected(frames.map((frame) => frame.id));
+            setTab("board");
+            toast(`${frames.length} sliced frame${frames.length === 1 ? "" : "s"} added to the deck`, "success", { label: "Undo", run: () => dispatch({ type: "UNDO" }) });
+          }} />
+        </div>
       </main>
 
       {/* ---------------- always-on preview ---------------- */}
