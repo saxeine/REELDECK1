@@ -18,11 +18,37 @@ interface BaseObj {
   id: string;
   color: string;
 }
+export type TextAlign = "left" | "center" | "right";
+
+type TextObj = BaseObj & {
+  kind: "text";
+  x: number;
+  y: number;
+  text: string;
+  size: number;
+  align?: TextAlign;
+  plate?: boolean;
+};
+
 type Obj =
   | (BaseObj & { kind: "line" | "arrow"; x1: number; y1: number; x2: number; y2: number; width: number })
   | (BaseObj & { kind: "rect"; x: number; y: number; w: number; h: number; width: number; fill: boolean })
-  | (BaseObj & { kind: "text"; x: number; y: number; text: string; size: number })
+  | TextObj
   | (BaseObj & { kind: "image"; x: number; y: number; w: number; h: number; src: string });
+
+interface TextEdit {
+  /** null while composing a brand new label */
+  id: string | null;
+  x: number;
+  y: number;
+  value: string;
+  size: number;
+  align: TextAlign;
+  plate: boolean;
+  color: string;
+  /** increments per edit session so the field remounts with clean focus */
+  session: number;
+}
 
 interface Rect {
   x: number;
@@ -55,6 +81,128 @@ const CROP_PRESETS: { label: string; value: number | null }[] = [
   { label: "1:1", value: 1 },
   { label: "9:16", value: 9 / 16 },
 ];
+
+const TEXT_FONT = '"Space Grotesk", system-ui, sans-serif';
+const TEXT_WEIGHT = 600;
+
+export interface TextLayout {
+  lines: string[];
+  widths: number[];
+  w: number;
+  h: number;
+  left: number;
+  top: number;
+  lineH: number;
+  padX: number;
+  padY: number;
+  align: TextAlign;
+}
+
+let MEASURE: CanvasRenderingContext2D | null = null;
+function measureCtx(): CanvasRenderingContext2D {
+  if (!MEASURE) {
+    const c = document.createElement("canvas");
+    c.width = 8;
+    c.height = 8;
+    MEASURE = c.getContext("2d")!;
+  }
+  return MEASURE;
+}
+
+/** Single source of truth for how a text object is measured, drawn and hit-tested. */
+export function textLayout(o: {
+  x: number;
+  y: number;
+  text: string;
+  size: number;
+  align?: TextAlign;
+}): TextLayout {
+  const ctx = measureCtx();
+  const lines = (o.text.length ? o.text : " ").split("\n");
+  ctx.font = `${TEXT_WEIGHT} ${o.size}px ${TEXT_FONT}`;
+  const widths = lines.map((l) => ctx.measureText(l.length ? l : " ").width);
+  const w = Math.max(4, ...widths);
+  const lineH = o.size * 1.18;
+  const h = lineH * lines.length;
+  const align: TextAlign = o.align ?? "left";
+  const left = align === "center" ? o.x - w / 2 : align === "right" ? o.x - w : o.x;
+  return {
+    lines,
+    widths,
+    w,
+    h,
+    left,
+    top: o.y,
+    lineH,
+    padX: Math.round(o.size * 0.22),
+    padY: Math.round(o.size * 0.13),
+    align,
+  };
+}
+
+function objBounds(o: Obj): Rect {
+  if (o.kind === "line" || o.kind === "arrow") {
+    return {
+      x: Math.min(o.x1, o.x2),
+      y: Math.min(o.y1, o.y2),
+      w: Math.abs(o.x2 - o.x1),
+      h: Math.abs(o.y2 - o.y1),
+    };
+  }
+  if (o.kind === "text") {
+    const L = textLayout(o);
+    return { x: L.left, y: L.top, w: L.w, h: L.h };
+  }
+  if (o.kind === "rect" || o.kind === "image") return { x: o.x, y: o.y, w: o.w, h: o.h };
+  return { x: 0, y: 0, w: 0, h: 0 };
+}
+
+function moveObjTo(o: Obj, x: number, y: number): Obj {
+  if (o.kind === "line" || o.kind === "arrow") {
+    const dx = x - o.x1;
+    const dy = y - o.y1;
+    return { ...o, x1: x, y1: y, x2: o.x2 + dx, y2: o.y2 + dy };
+  }
+  if (o.kind === "text" || o.kind === "rect" || o.kind === "image") return { ...o, x, y };
+  return o;
+}
+
+function NumField({
+  label,
+  value,
+  onChange,
+  min,
+  max,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+  min?: number;
+  max?: number;
+}) {
+  const [draft, setDraft] = useState(String(Math.round(value)));
+  const [focused, setFocused] = useState(false);
+  useEffect(() => { if (!focused) setDraft(String(Math.round(value))); }, [value, focused]);
+  return (
+    <label className="flex min-w-0 flex-1 items-center gap-1 rounded-[4px] border border-ink-600 bg-ink-850 px-1.5 py-1 focus-within:border-amber">
+      <span className="font-mono text-[9px] uppercase text-dim">{label}</span>
+      <input
+        type="number"
+        className="no-spin w-full min-w-0 bg-transparent text-right font-mono text-[11px] text-bone outline-none"
+        value={draft}
+        min={min}
+        max={max}
+        onFocus={() => setFocused(true)}
+        onBlur={() => { setFocused(false); if (draft.trim() === "" || !Number.isFinite(Number(draft))) setDraft(String(Math.round(value))); }}
+        onChange={(e) => {
+          const next = e.target.value;
+          setDraft(next);
+          if (next.trim() !== "" && Number.isFinite(Number(next))) onChange(Number(next));
+        }}
+      />
+    </label>
+  );
+}
 
 let RASTER: { src: string; w: number; h: number } | null = null;
 
@@ -115,7 +263,9 @@ export function FrameEditor({
   const [region, setRegion] = useState<Rect | null>(null);
   const [zoom, setZoom] = useState(1);
   const [box, setBox] = useState({ w: 800, h: 500 });
-  const [textDraft, setTextDraft] = useState<{ x: number; y: number; value: string } | null>(null);
+  const [textEdit, setTextEdit] = useState<TextEdit | null>(null);
+  const [textAlign, setTextAlign] = useState<TextAlign>("left");
+  const [textPlate, setTextPlate] = useState(true);
   const [past, setPast] = useState<Snapshot[]>([]);
   const [future, setFuture] = useState<Snapshot[]>([]);
   const [comment, setComment] = useState("");
@@ -128,6 +278,10 @@ export function FrameEditor({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const imgCache = useRef(new Map<string, HTMLImageElement>());
+  const textEditRef = useRef<TextEdit | null>(null);
+  const textFieldRef = useRef<HTMLTextAreaElement | null>(null);
+  const textSession = useRef(0);
+  const lastPush = useRef({ key: "", at: 0 });
   const drag = useRef<
     | null
     | {
@@ -166,7 +320,13 @@ export function FrameEditor({
     setName(frame.name);
     setDirty(false);
     setZoom(1);
+    textEditRef.current = null;
+    setTextEdit(null);
   }, [frame.id, frame.src]);
+
+  useEffect(() => {
+    textEditRef.current = textEdit;
+  }, [textEdit]);
 
   /* ---- viewport ---- */
   useLayoutEffect(() => {
@@ -249,17 +409,27 @@ export function FrameEditor({
         }
         ctx.strokeRect(o.x, o.y, o.w, o.h);
       } else if (o.kind === "text") {
-        ctx.font = `600 ${o.size}px "Space Grotesk", system-ui, sans-serif`;
-        ctx.textBaseline = "top";
-        const metrics = ctx.measureText(o.text);
-        const pad = o.size * 0.18;
-        ctx.globalAlpha = 0.82;
-        ctx.fillStyle = "#0d0b0a";
-        ctx.fillRect(o.x - pad, o.y - pad * 0.5, metrics.width + pad * 2, o.size * 1.25);
-        ctx.globalAlpha = 1;
+        const L = textLayout(o);
+        ctx.save();
+        if (o.plate !== false) {
+          ctx.globalAlpha = 0.82;
+          ctx.fillStyle = "#0d0b0a";
+          ctx.fillRect(
+            L.left - L.padX,
+            L.top - L.padY,
+            L.w + L.padX * 2,
+            L.h + L.padY * 2
+          );
+          ctx.globalAlpha = 1;
+        }
         ctx.fillStyle = o.color;
-        ctx.fillText(o.text, o.x, o.y);
-        ctx.textBaseline = "alphabetic";
+        ctx.font = `${TEXT_WEIGHT} ${o.size}px ${TEXT_FONT}`;
+        ctx.textAlign = L.align;
+        ctx.textBaseline = "top";
+        L.lines.forEach((line, i) => {
+          ctx.fillText(line, o.x, L.top + i * L.lineH);
+        });
+        ctx.restore();
       } else if (o.kind === "image") {
         const im = imgCache.current.get(o.src);
         if (im) {
@@ -280,6 +450,10 @@ export function FrameEditor({
         { x: o.x2, y: o.y2 },
       ];
     if (o.kind === "rect" || o.kind === "image") return [{ x: o.x + o.w, y: o.y + o.h }];
+    if (o.kind === "text") {
+      const L = textLayout(o);
+      return [{ x: L.left + L.w + L.padX, y: L.top + L.h + L.padY }];
+    }
     return [];
   }, []);
 
@@ -293,10 +467,11 @@ export function FrameEditor({
     }
     ctx.clearRect(0, 0, bw, bh);
     ctx.drawImage(baseImg, 0, 0, bw, bh);
-    for (const o of objects) paintObj(ctx, o, scale);
+    const editingId = textEdit?.id ?? null;
+    for (const o of objects) if (o.id !== editingId) paintObj(ctx, o, scale);
     if (draft) paintObj(ctx, draft, scale);
 
-    const sel = objects.find((o) => o.id === selId);
+    const sel = objects.find((o) => o.id === selId && o.id !== editingId);
     if (sel) {
       const hs = 9 / scale;
       ctx.save();
@@ -306,9 +481,13 @@ export function FrameEditor({
       if (sel.kind === "rect" || sel.kind === "image") {
         ctx.strokeRect(sel.x, sel.y, sel.w, sel.h);
       } else if (sel.kind === "text") {
-        ctx.font = `600 ${sel.size}px "Space Grotesk", system-ui, sans-serif`;
-        const m = ctx.measureText(sel.text);
-        ctx.strokeRect(sel.x - 4, sel.y - 4, m.width + 8, sel.size * 1.3);
+        const L = textLayout(sel);
+        ctx.strokeRect(
+          L.left - L.padX,
+          L.top - L.padY,
+          L.w + L.padX * 2,
+          L.h + L.padY * 2
+        );
       }
       ctx.setLineDash([]);
       for (const h of handlesFor(sel)) {
@@ -353,7 +532,20 @@ export function FrameEditor({
       }
       ctx.restore();
     }
-  }, [baseImg, bw, bh, objects, draft, selId, region, scale, tool, paintObj, handlesFor]);
+  }, [
+    baseImg,
+    bw,
+    bh,
+    objects,
+    draft,
+    selId,
+    region,
+    scale,
+    tool,
+    textEdit?.id,
+    paintObj,
+    handlesFor,
+  ]);
 
   useEffect(() => {
     redraw();
@@ -371,7 +563,6 @@ export function FrameEditor({
   const hitTest = useCallback(
     (x: number, y: number): Obj | null => {
       const tol = 10 / scale;
-      const ctx = canvasRef.current?.getContext("2d");
       for (let i = objects.length - 1; i >= 0; i--) {
         const o = objects[i];
         if (o.kind === "line" || o.kind === "arrow") {
@@ -384,10 +575,15 @@ export function FrameEditor({
           if (nearEdge || (o.fill && inside)) return o;
         } else if (o.kind === "image") {
           if (x >= o.x && x <= o.x + o.w && y >= o.y && y <= o.y + o.h) return o;
-        } else if (o.kind === "text" && ctx) {
-          ctx.font = `600 ${o.size}px "Space Grotesk", system-ui, sans-serif`;
-          const w = ctx.measureText(o.text).width;
-          if (x >= o.x - 6 && x <= o.x + w + 6 && y >= o.y - 6 && y <= o.y + o.size * 1.3) return o;
+        } else if (o.kind === "text") {
+          const L = textLayout(o);
+          if (
+            x >= L.left - L.padX - 4 &&
+            x <= L.left + L.w + L.padX + 4 &&
+            y >= L.top - L.padY - 4 &&
+            y <= L.top + L.h + L.padY + 4
+          )
+            return o;
         }
       }
       return null;
@@ -395,9 +591,155 @@ export function FrameEditor({
     [objects, scale]
   );
 
+  /* ---- text editing ---- */
+  const beginText = useCallback(
+    (o?: TextObj) => {
+      setRegion(null);
+      if (o) {
+        textSession.current += 1;
+        setTextEdit({
+          id: o.id,
+          x: o.x,
+          y: o.y,
+          value: o.text,
+          size: o.size,
+          align: o.align ?? "left",
+          plate: o.plate !== false,
+          color: o.color,
+          session: textSession.current,
+        });
+        setSelId(o.id);
+        setFontSize(o.size);
+        setColor(o.color);
+        setTextAlign(o.align ?? "left");
+        setTextPlate(o.plate !== false);
+        setTool("select");
+        setHint("Editing label — Enter commits · Shift+Enter adds a line · Esc cancels");
+      } else {
+        textSession.current += 1;
+        setSelId(null);
+        setTextEdit({
+          id: null,
+          x: 0,
+          y: 0,
+          value: "",
+          size: fontSize,
+          align: textAlign,
+          plate: textPlate,
+          color,
+          session: textSession.current,
+        });
+      }
+    },
+    [fontSize, textAlign, textPlate, color]
+  );
+
+  const beginTextAt = useCallback(
+    (x: number, y: number) => {
+      textSession.current += 1;
+      setSelId(null);
+      setTextEdit({
+        id: null,
+        x,
+        y,
+        value: "",
+        size: fontSize,
+        align: textAlign,
+        plate: textPlate,
+        color,
+        session: textSession.current,
+      });
+      setHint("Type a label — Enter commits, Shift+Enter adds a line");
+    },
+    [fontSize, textAlign, textPlate, color]
+  );
+
+  const finishText = useCallback(
+    (mode: "commit" | "cancel" = "commit") => {
+      const ed = textEditRef.current;
+      textEditRef.current = null;
+      setTextEdit(null);
+      if (!ed) return;
+      if (mode === "cancel") {
+        if (!ed.id) setHint("Text cancelled");
+        return;
+      }
+      const value = ed.value.replace(/[ \t]+$/gm, "").replace(/^\n+/, "").trimEnd();
+      if (!value.trim()) {
+        if (ed.id) {
+          push(objects, baseSrc);
+          setObjects((l) => l.filter((o) => o.id !== ed.id));
+          setSelId(null);
+          setHint("Empty label removed");
+        }
+        return;
+      }
+      if (ed.id) {
+        push(objects, baseSrc);
+        setObjects((l) =>
+          l.map((o) =>
+            o.id === ed.id
+              ? ({
+                  ...o,
+                  kind: "text",
+                  x: ed.x,
+                  y: ed.y,
+                  text: value,
+                  size: ed.size,
+                  align: ed.align,
+                  plate: ed.plate,
+                  color: ed.color,
+                } as Obj)
+              : o
+          )
+        );
+        setSelId(ed.id);
+      } else {
+        const o: Obj = {
+          id: uid("o"),
+          kind: "text",
+          color: ed.color,
+          x: ed.x,
+          y: ed.y,
+          text: value,
+          size: ed.size,
+          align: ed.align,
+          plate: ed.plate,
+        };
+        push(objects, baseSrc);
+        setObjects((l) => [...l, o]);
+        setSelId(o.id);
+        setTool("select");
+      }
+      setHint("Label placed — drag to position, arrow keys nudge, double-click to edit");
+    },
+    [objects, baseSrc, push]
+  );
+
+  /* keep the caret in the inline field for every new editing session */
+  const textSessionId = textEdit?.session ?? null;
+  useEffect(() => {
+    if (textSessionId == null) return;
+    const raf = requestAnimationFrame(() => {
+      const el = textFieldRef.current;
+      if (!el) return;
+      el.focus({ preventScroll: true });
+      const end = el.value.length;
+      try {
+        el.setSelectionRange(end, end);
+      } catch {
+        /* ignore */
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [textSessionId]);
+
   /* ---- pointer ---- */
   const onDown = (e: React.PointerEvent) => {
-    if (textDraft) return;
+    if (textEditRef.current) {
+      finishText("commit");
+      return;
+    }
     const p = toImg(e);
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
     if (tool === "select") {
@@ -420,7 +762,9 @@ export function FrameEditor({
       return;
     }
     if (tool === "text") {
-      setTextDraft({ x: p.x, y: p.y, value: "" });
+      const existing = hitTest(p.x, p.y);
+      if (existing && existing.kind === "text") beginText(existing);
+      else beginTextAt(p.x, p.y);
       return;
     }
     if (tool === "crop" || tool === "marquee") {
@@ -486,6 +830,12 @@ export function FrameEditor({
           const ratio = o.kind === "image" ? o.w / o.h : 1;
           const w = Math.max(20, p.x - it.x);
           return { ...it, w, h: w / ratio };
+        }
+        if (it.kind === "text") {
+          // the bottom-right handle scales the type instead of a bounding box
+          const L = textLayout(it);
+          const next = Math.max(8, Math.min(500, Math.round((p.y - L.top) / Math.max(1, L.lines.length) / 1.18)));
+          return { ...it, size: next };
         }
         return it;
       })
@@ -622,24 +972,89 @@ export function FrameEditor({
     setSelId(null);
   };
 
-  const commitText = () => {
-    if (!textDraft) return;
-    const value = textDraft.value.trim();
-    if (value) {
-      const o: Obj = {
-        id: uid("o"),
-        kind: "text",
-        color,
-        x: textDraft.x,
-        y: textDraft.y,
-        text: value,
-        size: fontSize,
-      };
-      push(objects, baseSrc);
-      setObjects((l) => [...l, o]);
-      setSelId(o.id);
+  /* ---- object property helpers ---- */
+  const pushOnce = useCallback(
+    (key: string) => {
+      const now = performance.now();
+      key = `${selId}:${key}`;
+      if (lastPush.current.key !== key || now - lastPush.current.at > 800) {
+        push(objects, baseSrc);
+      }
+      lastPush.current = { key, at: now };
+    },
+    [objects, baseSrc, push, selId]
+  );
+
+  const patchSelected = useCallback(
+    (patch: Partial<Record<string, unknown>>, historyKey?: string) => {
+      if (!selId) return;
+      if (historyKey) pushOnce(historyKey);
+      setObjects((l) => l.map((o) => (o.id === selId ? ({ ...o, ...patch } as Obj) : o)));
+    },
+    [selId, pushOnce]
+  );
+
+  /** colour / size / align changes land on the live draft when one is open */
+  const applyTextAttrs = useCallback(
+    (
+      patch: Partial<Pick<TextEdit, "color" | "size" | "align" | "plate">>,
+      historyKey?: string
+    ) => {
+      const draft = textEditRef.current;
+      if (draft) {
+        setTextEdit((t) => (t ? { ...t, ...patch } : t));
+        return;
+      }
+      const sel = objects.find((o) => o.id === selId);
+      if (sel?.kind === "text") patchSelected(patch as Partial<Record<string, unknown>>, historyKey);
+    },
+    [objects, selId, patchSelected]
+  );
+
+  const setSelectedPos = (x: number, y: number) => {
+    if (!selId) return;
+    pushOnce("pos");
+    setObjects((l) => l.map((o) => (o.id === selId ? moveObjTo(o, x, y) : o)));
+  };
+
+  const changeAlign = (next: TextAlign) => {
+    setTextAlign(next);
+    const draft = textEditRef.current;
+    if (draft) {
+      // matain the visual left edge while the anchor flips
+      const L = textLayout({ ...draft, text: draft.value });
+      const x = next === "left" ? L.left : next === "center" ? L.left + L.w / 2 : L.left + L.w;
+      setTextEdit((t) => (t ? { ...t, align: next, x } : t));
+      return;
     }
-    setTextDraft(null);
+    const sel = objects.find((o) => o.id === selId);
+    if (sel?.kind === "text" && (sel.align ?? "left") !== next) {
+      const L = textLayout(sel);
+      const x = next === "left" ? L.left : next === "center" ? L.left + L.w / 2 : L.left + L.w;
+      patchSelected({ align: next, x }, "text-align");
+    }
+  };
+
+  const nudge = useCallback(
+    (dx: number, dy: number) => {
+      if (!selId) return;
+      pushOnce("nudge");
+      setObjects((l) => l.map((o) => (o.id === selId ? shiftObj(o, dx, dy) : o)));
+    },
+    [selId, pushOnce]
+  );
+
+  const placeSelected = (fx: number, fy: number) => {
+    const sel = objects.find((o) => o.id === selId);
+    if (!sel) return;
+    const b = objBounds(sel);
+    const dx = (bw - b.w) * fx - b.x;
+    const dy = (bh - b.h) * fy - b.y;
+    pushOnce("place");
+    setObjects((l) => l.map((o) => (o.id === sel.id ? shiftObj(o, dx, dy) : o)));
+    const col = fx === 0 ? "left" : fx === 0.5 ? "centre" : "right";
+    const row = fy === 0 ? "top" : fy === 0.5 ? "middle" : "bottom";
+    setHint(`Selection anchored ${row} ${col}`);
   };
 
   const flatten = (): HTMLCanvasElement => {
@@ -648,7 +1063,9 @@ export function FrameEditor({
     c.height = bh;
     const ctx = c.getContext("2d")!;
     if (baseImg) ctx.drawImage(baseImg, 0, 0, bw, bh);
-    for (const o of objects) paintObj(ctx, o, 1);
+    const ed = textEditRef.current;
+    for (const o of objects) if (!ed || o.id !== ed.id) paintObj(ctx, o, 1);
+    if (ed?.value.trim()) paintObj(ctx, { id: ed.id ?? "draft", kind: "text", x: ed.x, y: ed.y, text: ed.value, size: ed.size, align: ed.align, plate: ed.plate, color: ed.color }, 1);
     return c;
   };
 
@@ -660,17 +1077,37 @@ export function FrameEditor({
   /* ---- keyboard ---- */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement;
-      const typing = /INPUT|TEXTAREA/.test(el.tagName);
+      const el = e.target as HTMLElement | null;
+      const typing = /INPUT|TEXTAREA|SELECT/.test(el?.tagName ?? "") || !!el?.isContentEditable;
+
+      // fields own their keys — Escape leaves the field, it does not close the studio
+      if (typing) {
+        if (e.key === "Escape" && !textEditRef.current) {
+          (el as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null)?.blur?.();
+        }
+        return;
+      }
+
       if (e.key === "Escape") {
-        if (textDraft) return setTextDraft(null);
+        if (textEditRef.current) return finishText("cancel");
         if (region) return setRegion(null);
         if (selId) return setSelId(null);
         onClose();
         return;
       }
-      if (typing) return;
+
       const meta = e.metaKey || e.ctrlKey;
+
+      if (!meta && selId && e.key.startsWith("Arrow")) {
+        const step = e.shiftKey ? 10 : 1;
+        const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+        const dy = e.key === "ArrowUp" ? -step : e.key === "ArrowDown" ? step : 0;
+        if (dx || dy) {
+          e.preventDefault();
+          nudge(dx, dy);
+          return;
+        }
+      }
       if (meta && e.key.toLowerCase() === "z") {
         e.preventDefault();
         e.shiftKey ? redo() : undo();
@@ -908,30 +1345,96 @@ export function FrameEditor({
                 onPointerMove={onMove}
                 onPointerUp={onUp}
                 onPointerLeave={() => setCursor(null)}
-                onDoubleClick={() => tool === "crop" && applyCrop()}
+                onDoubleClick={(e) => {
+                  if (tool === "crop") {
+                    applyCrop();
+                    return;
+                  }
+                  const p = toImg(e);
+                  const hit = hitTest(p.x, p.y);
+                  if (hit?.kind === "text") beginText(hit);
+                }}
               />
-              {textDraft && (
-                <input
-                  autoFocus
-                  value={textDraft.value}
-                  onChange={(e) => setTextDraft({ ...textDraft, value: e.target.value })}
-                  onBlur={commitText}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") commitText();
-                    if (e.key === "Escape") setTextDraft(null);
-                  }}
-                  placeholder="Type label…"
-                  className="absolute z-10 border border-dashed bg-ink-950/85 px-1 outline-none"
-                  style={{
-                    left: textDraft.x * scale,
-                    top: textDraft.y * scale,
-                    color,
-                    borderColor: color,
-                    fontSize: Math.max(11, fontSize * scale),
-                    minWidth: 120,
-                  }}
-                />
-              )}
+              {textEdit &&
+                (() => {
+                  const k = scale;
+                  const L = textLayout({
+                    x: textEdit.x,
+                    y: textEdit.y,
+                    text: textEdit.value,
+                    size: textEdit.size,
+                    align: textEdit.align,
+                  });
+                  const padX = Math.max(4, L.padX * k);
+                  const padY = Math.max(2, L.padY * k);
+                  const left = Math.max(0, L.left * k - padX);
+                  const width = Math.min(
+                    Math.max(176, (L.w + L.padX * 2) * k + 2),
+                    Math.max(176, dispW - left)
+                  );
+                  return (
+                    <div
+                      className="absolute z-20"
+                      style={{ left, top: Math.max(0, L.top * k - padY), width }}
+                      onPointerDown={(e) => e.stopPropagation()}
+                    >
+                      <textarea
+                        ref={textFieldRef}
+                        value={textEdit.value}
+                        placeholder="Type your label…"
+                        spellCheck={false}
+                        rows={Math.max(1, L.lines.length)}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          if (textEditRef.current) textEditRef.current = { ...textEditRef.current, value };
+                          setTextEdit((t) => (t ? { ...t, value } : t));
+                        }}
+                        onBlur={() => finishText("commit")}
+                        onKeyDown={(e) => {
+                          e.stopPropagation();
+                          if (e.key === "Escape") {
+                            e.preventDefault();
+                            finishText("cancel");
+                            return;
+                          }
+                          if (e.key === "Enter" && (!e.shiftKey || e.metaKey || e.ctrlKey)) {
+                            e.preventDefault();
+                            finishText("commit");
+                          }
+                        }}
+                        className="block w-full resize-none overflow-hidden rounded-[3px] border border-dashed outline-none"
+                        style={{
+                          fontFamily: TEXT_FONT,
+                          fontWeight: TEXT_WEIGHT,
+                          fontSize: Math.max(12, textEdit.size * k),
+                          lineHeight: 1.18,
+                          color: textEdit.color,
+                          textAlign: textEdit.align,
+                          background: textEdit.plate ? "rgba(13,11,10,0.86)" : "transparent",
+                          borderColor: textEdit.color,
+                          padding: `${padY}px ${padX}px`,
+                          caretColor: textEdit.color,
+                          minHeight: Math.max(30, (L.h + L.padY * 2) * k),
+                        }}
+                      />
+                      <div className="mt-1 flex items-center gap-2 whitespace-nowrap rounded-[3px] border border-line bg-ink-900/95 px-1.5 py-1 font-mono text-[9px] text-dim shadow-lg">
+                        <span>ENTER commit</span>
+                        <span className="hidden sm:inline">⇧ENTER line</span>
+                        <span>ESC cancel</span>
+                        <button
+                          type="button"
+                          className="ml-auto rounded border border-amber/50 px-1.5 py-[1px] text-amber transition-colors hover:bg-amber/15"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            finishText("commit");
+                          }}
+                        >
+                          Done
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
             </div>
           </div>
 
@@ -964,10 +1467,8 @@ export function FrameEditor({
                   key={c}
                   onClick={() => {
                     setColor(c);
-                    if (selected) {
-                      push(objects, baseSrc);
-                      setObjects((l) => l.map((o) => (o.id === selected.id ? { ...o, color: c } : o)));
-                    }
+                    if (selected?.kind === "text" || textEdit) applyTextAttrs({ color: c }, "text-color");
+                    else if (selected) patchSelected({ color: c }, "color");
                   }}
                   title={c}
                   className={cn(
@@ -982,7 +1483,7 @@ export function FrameEditor({
               <input
                 type="color"
                 value={color}
-                onChange={(e) => setColor(e.target.value)}
+                onChange={(e) => { setColor(e.target.value); if (selected?.kind === "text" || textEdit) applyTextAttrs({ color: e.target.value }, "text-color"); else if (selected) patchSelected({ color: e.target.value }, "color"); }}
                 className="h-7 w-9 rounded"
                 title="Custom colour"
               />
@@ -990,10 +1491,34 @@ export function FrameEditor({
             </div>
             <div className="mt-2 space-y-2">
               <Slider label="Stroke width" value={width} min={1} max={40} onChange={setWidth} unit="px" />
-              <Slider label="Text size" value={fontSize} min={12} max={200} onChange={setFontSize} unit="px" />
+              <Slider label="Text size" value={textEdit?.size ?? (selected?.kind === "text" ? selected.size : fontSize)} min={12} max={200} onChange={(v) => { setFontSize(v); applyTextAttrs({ size: v }, "text-size"); }} unit="px" />
               <Toggle label="Fill boxes" checked={fillBox} onChange={setFillBox} />
             </div>
           </div>
+
+          {(selected?.kind === "text" || tool === "text") && (
+            <div className="space-y-2">
+              <SectionTitle hue="#21d4ee">Text & position</SectionTitle>
+              {selected?.kind === "text" && <Btn size="xs" icon="pencil" onClick={() => beginText(selected)}>Edit text</Btn>}
+              <div className="flex gap-1" aria-label="Text alignment">
+                {(["left", "center", "right"] as const).map((align) => (
+                  <button key={align} type="button" title={`Align ${align}`} aria-label={`Align text ${align}`} aria-pressed={(selected?.kind === "text" ? selected.align ?? "left" : textAlign) === align} onClick={() => changeAlign(align)} className={cn("rounded border px-2 py-1", (selected?.kind === "text" ? selected.align ?? "left" : textAlign) === align ? "border-amber text-amber" : "border-line text-mute")}><Icon name={align === "left" ? "alignLeft" : align === "center" ? "alignCenter" : "alignRight"} size={14} /></button>
+                ))}
+              </div>
+              <Toggle label="Text background" checked={selected?.kind === "text" ? selected.plate !== false : textPlate} onChange={(v) => { setTextPlate(v); applyTextAttrs({ plate: v }, "text-plate"); }} />
+              {selected?.kind === "text" && <>
+                <div className="flex gap-1">
+                  <NumField label="X" value={selected.x} onChange={(v) => setSelectedPos(v, selected.y)} />
+                  <NumField label="Y" value={selected.y} onChange={(v) => setSelectedPos(selected.x, v)} />
+                </div>
+                <div className="tk text-dim">Position on frame</div>
+                <div className="grid w-24 grid-cols-3 gap-1">
+                  {[0, 0.5, 1].flatMap((y) => [0, 0.5, 1].map((x) => <button key={`${x}-${y}`} type="button" aria-label={`Place ${y === 0 ? "top" : y === 0.5 ? "middle" : "bottom"} ${x === 0 ? "left" : x === 0.5 ? "center" : "right"}`} onClick={() => placeSelected(x, y)} className="h-6 rounded border border-line bg-ink-850 text-mute hover:border-amber hover:text-amber">·</button>))}
+                </div>
+                <p className="text-[10px] text-dim">Drag to move, or use arrow keys (Shift for 10 px). Double-click to edit.</p>
+              </>}
+            </div>
+          )}
 
           <div>
             <SectionTitle hue="#21d4ee">Crop presets</SectionTitle>

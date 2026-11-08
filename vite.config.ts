@@ -10,6 +10,15 @@ const __dirname = path.dirname(__filename);
 
 // https://vite.dev/config/
 export default defineConfig({
+  server: {
+    host: "0.0.0.0",
+    // Preview hosts are proxied under a per-sandbox *.e2b.app domain.
+    allowedHosts: [".e2b.app", "localhost", "127.0.0.1"],
+  },
+  preview: {
+    host: "0.0.0.0",
+    allowedHosts: [".e2b.app", "localhost", "127.0.0.1"],
+  },
   plugins: [react(), tailwindcss(), viteSingleFile()],
   resolve: {
     alias: {
