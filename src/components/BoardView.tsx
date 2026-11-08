@@ -48,6 +48,7 @@ interface Props {
   api: BoardApi;
   onOpenEditor: (id: string) => void;
   onGoSheet: () => void;
+  onSlice: (id: string) => void;
   starts: Record<string, number>;
   searchRef: React.RefObject<HTMLInputElement | null>;
 }
@@ -576,6 +577,13 @@ export function BoardView(p: Props) {
                             e.stopPropagation();
                             p.onOpenEditor(f.id);
                           }}
+                        />
+                        <IconBtn
+                          icon="scissors"
+                          label="Slice this image"
+                          size={26}
+                          className="bg-ink-950/75"
+                          onClick={(e) => { e.stopPropagation(); p.onSlice(f.id); }}
                         />
                         <IconBtn
                           icon="copy"
