@@ -3,7 +3,9 @@ import { BoardView, type BoardApi } from "./components/BoardView";
 import { FrameEditor } from "./components/FrameEditor";
 import { HandoffView } from "./components/HandoffView";
 import { Icon } from "./components/Icon";
+import { PreviewDock } from "./components/PreviewDock";
 import { SheetView } from "./components/SheetView";
+import { ThemeMenu } from "./components/ThemeMenu";
 import { Btn, IconBtn } from "./components/ui";
 import {
   DEFAULT_SHEET,
@@ -27,8 +29,14 @@ import {
 } from "./lib/imaging";
 import { BUILTIN_VIEWS, seedDoc } from "./lib/seed";
 import { DEFAULT_HANDOFF, buildPrompt, manifestJson, type HandoffOptions } from "./lib/prompts";
-import { renderSheet, type SheetResult } from "./lib/sheet";
+import { THEMES, renderSheet, type SheetResult } from "./lib/sheet";
 import { initHistory, reducer } from "./lib/store";
+import {
+  applyTheme,
+  loadTheme,
+  saveTheme,
+  type ThemeKey,
+} from "./lib/theme";
 import { cn } from "./utils/cn";
 
 type Tab = "board" | "sheet" | "handoff";
@@ -47,6 +55,8 @@ interface Prefs {
   handoff?: Partial<HandoffOptions>;
   views?: SavedView[];
   density?: number;
+  theme?: ThemeKey;
+  previewCollapsed?: boolean;
 }
 
 function loadPrefs(): Prefs {
@@ -100,6 +110,12 @@ export default function App() {
   const [rendering, setRendering] = useState(true);
   const [renderMs, setRenderMs] = useState(0);
   const [preview, setPreview] = useState<string | null>(null);
+  const [theme, setThemeState] = useState<ThemeKey>(() =>
+    loadTheme()
+  );
+  const [previewCollapsed, setPreviewCollapsed] = useState(
+    prefs.current.previewCollapsed ?? false
+  );
 
   const searchRef = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -183,18 +199,27 @@ export default function App() {
   }, [canvas, scopeFrames, doc.sheet, doc.title, doc.logline]);
 
   const refreshPreview = useCallback(() => {
-    if (!canvas.width) return;
+    if (!canvas.width || !canvas.height) return;
     const c = document.createElement("canvas");
     const k = Math.min(1, 900 / canvas.width);
-    c.width = Math.round(canvas.width * k);
-    c.height = Math.round(canvas.height * k);
+    c.width = Math.max(1, Math.round(canvas.width * k));
+    c.height = Math.max(1, Math.round(canvas.height * k));
     c.getContext("2d")!.drawImage(canvas, 0, 0, c.width, c.height);
-    setPreview(c.toDataURL("image/jpeg", 0.72));
+    setPreview(c.toDataURL("image/jpeg", 0.78));
   }, [canvas]);
 
+  /* the preview is a permanent part of the workspace — keep it fresh on every tab */
   useEffect(() => {
-    if (tab === "handoff" && !rendering) refreshPreview();
-  }, [tab, rendering, refreshPreview, info]);
+    if (rendering || !info) return;
+    const t = window.setTimeout(refreshPreview, 90);
+    return () => window.clearTimeout(t);
+  }, [rendering, info, refreshPreview]);
+
+  /* ------------------------------ theme ------------------------------ */
+  useEffect(() => {
+    applyTheme(theme);
+    saveTheme(theme);
+  }, [theme]);
 
   /* ------------------------------ prefs ------------------------------ */
   useEffect(() => {
@@ -207,6 +232,8 @@ export default function App() {
             handoff,
             views: views.filter((v) => !v.builtin),
             density,
+            theme,
+            previewCollapsed,
           })
         );
       } catch {
@@ -214,7 +241,7 @@ export default function App() {
       }
     }, 500);
     return () => window.clearTimeout(t);
-  }, [doc.sheet, handoff, views, density]);
+  }, [doc.sheet, handoff, views, density, theme, previewCollapsed]);
 
   /* ------------------------------ operations ------------------------------ */
   const importFiles = useCallback(
@@ -592,6 +619,8 @@ h2{font:400 24px/1 "Bebas Neue",Impact,sans-serif;letter-spacing:.04em;color:#ff
         </nav>
 
         <div className="ml-auto flex items-center gap-1.5">
+          <ThemeMenu theme={theme} onTheme={setThemeState} />
+          <div className="mx-0.5 hidden h-5 w-px bg-line sm:block" />
           <IconBtn
             icon="undo"
             label={`Undo (${hist.past.length})`}
@@ -786,6 +815,24 @@ h2{font:400 24px/1 "Bebas Neue",Impact,sans-serif;letter-spacing:.04em;color:#ff
           />
         )}
       </main>
+
+      {/* ---------------- always-on preview ---------------- */}
+      <PreviewDock
+        preview={preview}
+        width={info?.width ?? 0}
+        height={info?.height ?? 0}
+        frames={scopeFrames.length}
+        themeLabel={THEMES[doc.sheet.theme].label}
+        rendering={rendering}
+        renderMs={renderMs}
+        collapsed={previewCollapsed}
+        locked={tab === "sheet"}
+        onToggle={() => setPreviewCollapsed((c) => !c)}
+        onOpenSheet={() => setTab("sheet")}
+        onExport={() => exportSheet("png")}
+        onCopy={copySheet}
+        onHandoff={() => setTab("handoff")}
+      />
 
       {/* ---------------- status bar ---------------- */}
       <footer className="relative z-20 flex shrink-0 items-center gap-3 border-t border-line bg-ink-950/90 px-3 py-1 font-mono text-[9.5px] text-dim">

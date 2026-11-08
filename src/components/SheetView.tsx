@@ -51,7 +51,7 @@ export function SheetView({
     el.appendChild(canvas);
     canvas.style.display = "block";
     canvas.style.borderRadius = "3px";
-    canvas.style.boxShadow = "0 30px 80px -30px rgba(0,0,0,0.95)";
+    canvas.style.boxShadow = "var(--canvas-shadow)";
     return () => {
       if (canvas.parentNode === el) el.removeChild(canvas);
     };
@@ -108,7 +108,7 @@ export function SheetView({
           </div>
         </div>
 
-        <div className="relative min-h-0 flex-1 overflow-auto bg-[radial-gradient(circle_at_50%_0%,#1b1512,#0a0908_70%)] p-4 sm:p-7">
+        <div className="sheet-stage relative min-h-0 flex-1 overflow-auto p-4 sm:p-7">
           {rendering && (
             <div className="sweep pointer-events-none absolute inset-x-7 top-7 z-10 h-[3px] overflow-hidden rounded-full bg-amber/20" />
           )}

@@ -113,6 +113,26 @@ const P: Record<string, ReactNode> = {
   left: <path d="M15 5l-7 7 7 7" />,
   right: <path d="M9 5l7 7-7 7" />,
   down: <path d="M5 9l7 7 7-7" />,
+  up: <path d="M5 15l7-7 7 7" />,
+  palette: (
+    <>
+      <path d="M12 3a9 9 0 100 18c1.4 0 2-.9 2-1.9 0-1.5-1.3-1.8-1.3-3.1 0-1 .8-1.7 1.9-1.7H17a4 4 0 004-4C21 6.4 17 3 12 3z" />
+      <circle cx="7.8" cy="10.2" r="1.1" />
+      <circle cx="10.4" cy="7" r="1.1" />
+      <circle cx="14.6" cy="7.4" r="1.1" />
+      <circle cx="17" cy="10.4" r="1.1" />
+    </>
+  ),
+  alignLeft: <path d="M4 6h16M4 12h10M4 18h13" />,
+  alignCenter: <path d="M4 6h16M7 12h10M5.5 18h13" />,
+  alignRight: <path d="M4 6h16M10 12h10M7 18h13" />,
+  textBox: (
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2" strokeDasharray="3 3" />
+      <path d="M7.5 9V7.6h9V9M12 7.6V16M9.8 16h4.4" />
+    </>
+  ),
+  move: <path d="M12 3v18M3 12h18M12 3l-2.4 2.4M12 3l2.4 2.4M12 21l-2.4-2.4M12 21l2.4-2.4M3 12l2.4-2.4M3 12l2.4 2.4M21 12l-2.4-2.4M21 12l-2.4 2.4" />,
   comment: <path d="M20 15a2 2 0 01-2 2H8l-4 4V6a2 2 0 012-2h12a2 2 0 012 2z" />,
   clock: (
     <>
